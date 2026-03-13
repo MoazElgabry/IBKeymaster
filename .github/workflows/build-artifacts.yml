@@ -59,15 +59,15 @@ jobs:
         shell: bash
         run: |
           rm -rf artifacts/macos-universal
-          mkdir -p artifacts/macos-universal/IBKeyer.ofx.bundle/Contents/MacOS
-          cp IBKeymaster/IBKeyer.ofx.bundle/Contents/MacOS/IBKeyer.ofx \
-             artifacts/macos-universal/IBKeyer.ofx.bundle/Contents/MacOS/
+          mkdir -p artifacts/macos-universal/IBKeyer-macos-universal-portable
+          cp -R IBKeymaster/IBKeyer.ofx.bundle \
+             artifacts/macos-universal/IBKeyer-macos-universal-portable/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: IBKeyer-macos-universal
-          path: artifacts/macos-universal/IBKeyer.ofx.bundle
+          path: artifacts/macos-universal/IBKeyer-macos-universal-portable
           if-no-files-found: error
           retention-days: 14
 
@@ -110,9 +110,6 @@ jobs:
         shell: bash
         run: |
           rm -rf artifacts/linux-x86_64
-          # OFX hosts expect the bundle directory itself to be copied into /usr/OFX/Plugins
-          # (or another OFX_PLUGIN_PATH entry), so we stage a small portable parent folder that
-          # preserves IBKeyer.ofx.bundle/Contents/Linux-x86-64/IBKeyer.ofx exactly as installed.
           mkdir -p artifacts/linux-x86_64/IBKeyer-linux-x86_64-portable/IBKeyer.ofx.bundle/Contents/Linux-x86-64
           cp IBKeymaster/IBKeyer.ofx.bundle/Contents/Linux-x86-64/IBKeyer.ofx \
              artifacts/linux-x86_64/IBKeyer-linux-x86_64-portable/IBKeyer.ofx.bundle/Contents/Linux-x86-64/
