@@ -23,6 +23,15 @@ That means the practical order is:
 - macOS: `Host Metal -> CPU`
 - Windows/Linux: `Host CUDA -> Internal CUDA -> CPU`
 
+That needs one important footnote now, because this was one of the bugs I had to fix after real Resolve testing:
+
+- once the host has already switched the frame over to OFX host-CUDA memory, I do **not** let the plugin "fall back" into CPU staging just because the host-CUDA path declined
+
+At that point the images are no longer normal host-readable pointers, so pretending staged CUDA or CPU is still a safe fallback is how you end up hanging the loader or scanning the plugin against the wrong memory model. So the real rule is:
+
+- if the host never enabled CUDA render for that frame, `Internal CUDA -> CPU` is still a normal fallback chain
+- if the host **did** enable CUDA render, IBKeyer stays on the host-CUDA memory contract and fails fast instead of trying to reinterpret those pointers on the CPU
+
 I kept CPU as the reference implementation. It is slower, but it is also the least dependent on host resource ownership rules, stream lifetime, or GPU pointer assumptions. When I need to answer "is the algorithm wrong, or is the backend wrong?", CPU is the thing I compare against first.
 
 ## Why I split the old file
@@ -128,14 +137,21 @@ Useful environment switches:
   Forces the reference CPU path.
 - `IBKEYER_DISABLE_CUDA=1`
   Disables the internal staged CUDA path.
+- `IBKEYER_CUDA_RENDER_MODE=HOST|AUTO|INTERNAL`
+  Lets me force host-preferred or internal-only CUDA policy without changing the descriptor code again.
 - `IBKEYER_DEBUG_LOG=1`
   Enables verbose backend logging.
+- `IBKEYER_FILE_LOG=1`
+  Writes those backend messages to a dedicated log file, which is much easier to read than chasing Resolve helper-process output.
+- `IBKEYER_LOG_PATH=...`
+  Optional override for where that file log is written.
 - `IBKEYER_HOST_CUDA_FORCE_SYNC=1`
   Forces synchronization in the host-CUDA path when debugging stream/lifetime issues.
 
 Normal fallback behavior:
 
-- Host CUDA falls back if the host does not enable CUDA render, does not provide a CUDA stream, or gives us a layout we refuse to guess about.
+- Host CUDA falls back to internal staged CUDA only when the host never actually put the frame on the OFX host-CUDA contract for that render.
+- If the host **did** enable CUDA render and the host-CUDA path fails, I now stop there instead of falling through into CPU-readable staging assumptions.
 - Internal CUDA falls back if staging, allocation, launch, or synchronization fails.
 - Host Metal falls back when the host does not provide the expected full-frame resource layout.
 
@@ -152,3 +168,5 @@ The areas I would still validate manually are:
 - guided-filter edge detail and near-grey extraction behavior on real keyed footage
 
 I also intentionally kept the macOS Metal path conservative. If the host does not give the old full-frame assumptions the Metal kernel expects, I would rather fall back to CPU than pretend partial-window Metal is safe when we have not proven it is.
+
+One other Windows-specific lesson that turned out to matter more than I expected: loader safety is part of backend design too. I originally had a `thread_local` CUDA scratch cache with a destructor that cleaned up CUDA allocations and events. That looked tidy in isolation, but it is exactly the wrong kind of cleanup to run while `OFXLoader.exe` is unloading the plugin or tearing down threads. I changed that into a lazily allocated per-thread cache without destructor-driven CUDA teardown, because the boring version there is much safer than the elegant one.
