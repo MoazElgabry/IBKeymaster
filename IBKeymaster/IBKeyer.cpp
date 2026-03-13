@@ -324,13 +324,17 @@ void IBKeyerFactory::describe(ImageEffectDescriptor& p_Desc)
     p_Desc.setSupportsMultipleClipPARs(kSupportsMultipleClipPARs);
 
 #if defined(OFX_SUPPORTS_CUDARENDER) && !defined(__APPLE__)
-    // GPU support.
+    // OpenDRT taught me an important rule here: the descriptor and the runtime policy have to tell
+    // the same story. If describe() says "host CUDA exists" but render() quietly prefers staged CUDA
+    // (or the other way around), Resolve can make bad assumptions during scan or playback.
     //
-    // Host CUDA support means the host may hand us device pointers directly via fetchImage().
-    // Advertising it lets Resolve skip the round-trip through CPU staging when it knows how to
-    // keep the whole frame on the GPU for us.
-    p_Desc.setSupportsCudaRender(true);
-    p_Desc.setSupportsCudaStream(true);
+    // Because of that I use the shared selector from IBKeyerBackend.cpp for both places.
+    // Default policy is host-preferred, while env overrides can still force INTERNAL if we ever need
+    // to debug host interop separately from the CUDA algorithm itself.
+    const bool advertiseHostCuda =
+        (IBKeyerCore::selectedCudaRenderMode() == IBKeyerCore::CudaRenderMode::HostPreferred);
+    p_Desc.setSupportsCudaRender(advertiseHostCuda);
+    p_Desc.setSupportsCudaStream(advertiseHostCuda);
 #elif defined(__APPLE__)
     // We only advertise Metal where we still have a real host-Metal implementation.
     // Windows/Linux now have a host-CUDA path, while macOS still keeps the older Metal route.

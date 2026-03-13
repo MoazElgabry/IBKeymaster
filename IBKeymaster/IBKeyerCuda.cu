@@ -58,11 +58,6 @@ struct CudaScratchCache
     cudaEvent_t inFlightEvent = nullptr;
     cudaStream_t lastStream = nullptr;
 
-    ~CudaScratchCache()
-    {
-        release();
-    }
-
     void release()
     {
         cudaFree(gaussianWeights);
@@ -198,9 +193,23 @@ struct CudaScratchCache
 };
 
 // The host-CUDA fast path avoids source/destination copies, but it still needs temporary device
-// buffers for the guided filter. A thread-local cache keeps those allocations warm across frames
-// without making instance teardown or fallback logic much harder to reason about.
-thread_local CudaScratchCache gScratch;
+// buffers for the guided filter.
+//
+// Important Windows/Resolve lesson:
+// a thread_local object with a non-trivial destructor means the loader may run CUDA teardown while
+// unloading the plugin or tearing down OFXLoader.exe threads. That is a nasty place to call into the
+// CUDA runtime and can hang plugin scanning before Resolve even opens.
+//
+// So we keep the per-thread reuse, but store it behind a trivial TLS pointer and intentionally let
+// the OS reclaim it at process exit instead of running CUDA cleanup from a loader-sensitive destructor.
+CudaScratchCache& scratchCache()
+{
+    thread_local CudaScratchCache* cache = nullptr;
+    if (cache == nullptr) {
+        cache = new CudaScratchCache();
+    }
+    return *cache;
+}
 
 // Moved from conceptually matching the Metal kernel's Gaussian precompute.
 //
@@ -581,6 +590,7 @@ bool renderCudaFrame(const IBKeyerParams& params,
                      bool waitForCompletion,
                      std::string& error)
 {
+    CudaScratchCache& scratch = scratchCache();
     const int width = frame.renderWindow.x2 - frame.renderWindow.x1;
     const int height = frame.renderWindow.y2 - frame.renderWindow.y1;
     if (width <= 0 || height <= 0 || frame.src.data == nullptr || frame.dst.data == nullptr) {
@@ -590,14 +600,14 @@ bool renderCudaFrame(const IBKeyerParams& params,
 
     const int pixelCount = width * height;
     const bool doGF = guidedFilterActive(params);
-    if (!gScratch.ensurePixelCapacity(pixelCount, error)) {
+    if (!scratch.ensurePixelCapacity(pixelCount, error)) {
         return false;
     }
-    if (!gScratch.ensureReusable(stream, waitForCompletion, error)) {
+    if (!scratch.ensureReusable(stream, waitForCompletion, error)) {
         return false;
     }
     if (doGF) {
-        if (!gScratch.ensureGaussianWeights(buildGaussianWeights(params.guidedRadius), params.guidedRadius, error)) {
+        if (!scratch.ensureGaussianWeights(buildGaussianWeights(params.guidedRadius), params.guidedRadius, error)) {
             return false;
         }
     }
@@ -621,8 +631,8 @@ bool renderCudaFrame(const IBKeyerParams& params,
                                                          frame.renderWindow.y1,
                                                          width,
                                                          height,
-                                                         gScratch.rawAlpha,
-                                                         gScratch.guide);
+                                                         scratch.rawAlpha,
+                                                         scratch.guide);
     if (!captureKernelStage("core kernel", stream, waitForCompletion, error)) {
         return false;
     }
@@ -630,12 +640,12 @@ bool renderCudaFrame(const IBKeyerParams& params,
     if (doGF) {
         computeProductsKernel<<<flatBlocks, flatThreads, 0, stream>>>(
             pixelCount,
-            gScratch.rawAlpha,
-            gScratch.guide,
-            gScratch.meanI,
-            gScratch.meanP,
-            gScratch.meanIp,
-            gScratch.meanII);
+            scratch.rawAlpha,
+            scratch.guide,
+            scratch.meanI,
+            scratch.meanP,
+            scratch.meanIp,
+            scratch.meanII);
         if (!captureKernelStage("guided products", stream, waitForCompletion, error)) {
             return false;
         }
@@ -643,26 +653,26 @@ bool renderCudaFrame(const IBKeyerParams& params,
         // This is the part zero-copy does not remove: the guided filter still needs temporary
         // working buffers on the GPU. What zero-copy changes is that Source/Screen/Output stay
         // on the host-owned device images instead of bouncing through CPU memory first.
-        if (!runGaussianBlur(gScratch.meanI, gScratch.scratch, gScratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
-            !runGaussianBlur(gScratch.meanP, gScratch.scratch, gScratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
-            !runGaussianBlur(gScratch.meanIp, gScratch.scratch, gScratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
-            !runGaussianBlur(gScratch.meanII, gScratch.scratch, gScratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error)) {
+        if (!runGaussianBlur(scratch.meanI, scratch.scratch, scratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
+            !runGaussianBlur(scratch.meanP, scratch.scratch, scratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
+            !runGaussianBlur(scratch.meanIp, scratch.scratch, scratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
+            !runGaussianBlur(scratch.meanII, scratch.scratch, scratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error)) {
             return false;
         }
 
         guidedCoeffKernel<<<flatBlocks, flatThreads, 0, stream>>>(
             pixelCount,
             params.guidedEpsilon,
-            gScratch.meanI,
-            gScratch.meanP,
-            gScratch.meanIp,
-            gScratch.meanII);
+            scratch.meanI,
+            scratch.meanP,
+            scratch.meanIp,
+            scratch.meanII);
         if (!captureKernelStage("guided coefficients", stream, waitForCompletion, error)) {
             return false;
         }
 
-        if (!runGaussianBlur(gScratch.meanI, gScratch.scratch, gScratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
-            !runGaussianBlur(gScratch.meanP, gScratch.scratch, gScratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error)) {
+        if (!runGaussianBlur(scratch.meanI, scratch.scratch, scratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error) ||
+            !runGaussianBlur(scratch.meanP, scratch.scratch, scratch.gaussianWeights, width, height, params.guidedRadius, stream, waitForCompletion, error)) {
             return false;
         }
 
@@ -672,10 +682,10 @@ bool renderCudaFrame(const IBKeyerParams& params,
                                                                     frame.renderWindow.y1,
                                                                     width,
                                                                     height,
-                                                                    gScratch.rawAlpha,
-                                                                    gScratch.guide,
-                                                                    gScratch.meanI,
-                                                                    gScratch.meanP);
+                                                                    scratch.rawAlpha,
+                                                                    scratch.guide,
+                                                                    scratch.meanI,
+                                                                    scratch.meanP);
         if (!captureKernelStage("guided apply", stream, waitForCompletion, error)) {
             return false;
         }
@@ -691,7 +701,7 @@ bool renderCudaFrame(const IBKeyerParams& params,
         }
     }
 
-    if (!waitForCompletion && !gScratch.markInFlight(stream)) {
+    if (!waitForCompletion && !scratch.markInFlight(stream)) {
         // If we cannot record the fence event, we give up some performance and force the stream
         // to finish now so those scratch buffers are still safe to reuse on the next frame.
         const cudaError_t syncError = cudaStreamSynchronize(stream);

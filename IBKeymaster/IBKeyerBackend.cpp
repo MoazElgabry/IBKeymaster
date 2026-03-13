@@ -7,10 +7,14 @@
 //   old GPU dispatch choice          -> chooseBackend / renderHostCuda / renderInternalCuda
 
 #include <algorithm>
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -60,10 +64,50 @@ bool debugLogEnabled()
     return enabled;
 }
 
+bool fileLogEnabled()
+{
+    static const bool enabled = envFlagEnabled("IBKEYER_FILE_LOG");
+    return enabled;
+}
+
 bool hostCudaForceSyncEnabled()
 {
     static const bool enabled = envFlagEnabled("IBKEYER_HOST_CUDA_FORCE_SYNC");
     return enabled;
+}
+
+// One selector controls both descriptor advertising and runtime routing.
+CudaRenderMode selectedCudaRenderModeImpl()
+{
+    static const CudaRenderMode mode = []() {
+        const char* modeVar = std::getenv("IBKEYER_CUDA_RENDER_MODE");
+        if (modeVar != nullptr && modeVar[0] != '\0') {
+            std::string mode(modeVar);
+            std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+                return static_cast<char>(std::toupper(c));
+            });
+            if (mode == "INTERNAL") {
+                return CudaRenderMode::InternalOnly;
+            }
+            if (mode == "HOST" || mode == "AUTO") {
+                return CudaRenderMode::HostPreferred;
+            }
+        }
+
+        // Keep the legacy toggles alive so earlier troubleshooting notes and user env setups
+        // do not become dead ends after the render-policy cleanup.
+        if (envFlagEnabled("IBKEYER_FORCE_INTERNAL_CUDA") || envFlagEnabled("IBKEYER_DISABLE_HOST_CUDA")) {
+            return CudaRenderMode::InternalOnly;
+        }
+        if (envFlagEnabled("IBKEYER_ENABLE_HOST_CUDA")) {
+            return CudaRenderMode::HostPreferred;
+        }
+
+        // Default back to host-preferred when CUDA is compiled in. That is the whole point of this
+        // pass: if the host gives us device images + stream, use them first and avoid staging.
+        return CudaRenderMode::HostPreferred;
+    }();
+    return mode;
 }
 
 std::string formatString(const char* format, ...)
@@ -83,6 +127,56 @@ void logMessage(bool always, const std::string& message)
     }
     OFX::Log::print("%s\n", message.c_str());
     std::fprintf(stderr, "%s\n", message.c_str());
+
+    if (!fileLogEnabled()) {
+        return;
+    }
+
+    // This file logger is intentionally opt-in. 
+    // when host/backend routing needs proof, a dedicated log file is much easier to read than chasing
+    // stderr from Resolve helper processes.
+    static std::mutex logMutex;
+    static bool pathInitialized = false;
+    static std::filesystem::path logPath;
+
+    if (!pathInitialized) {
+        pathInitialized = true;
+
+        const char* overridePath = std::getenv("IBKEYER_LOG_PATH");
+        if (overridePath != nullptr && overridePath[0] != '\0') {
+            logPath = std::filesystem::path(overridePath);
+        } else {
+#if defined(_WIN32)
+            const char* base = std::getenv("LOCALAPPDATA");
+            if (base != nullptr && base[0] != '\0') {
+                logPath = std::filesystem::path(base) / "IBKeyer" / "debug.log";
+            }
+#else
+            const char* home = std::getenv("HOME");
+            if (home != nullptr && home[0] != '\0') {
+                logPath = std::filesystem::path(home) / ".cache" / "IBKeyer" / "debug.log";
+            }
+#endif
+        }
+
+        if (!logPath.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(logPath.parent_path(), ec);
+            if (ec) {
+                logPath.clear();
+            }
+        }
+    }
+
+    if (logPath.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(logMutex);
+    std::ofstream stream(logPath, std::ios::app);
+    if (stream.is_open()) {
+        stream << message << '\n';
+    }
 }
 
 // Moved from: small bits of validation that used to be implicit inside the old processor class.
@@ -643,17 +737,29 @@ BackendKind chooseBackend(const RenderRequest& request, std::string& reason)
     reason = "The host did not provide Metal render resources, so macOS falls back to CPU.";
     return BackendKind::CPU;
 #elif defined(OFX_SUPPORTS_CUDARENDER)
-    if (!envFlagEnabled("IBKEYER_DISABLE_HOST_CUDA") &&
-        request.hostCudaEnabled &&
+    const CudaRenderMode cudaMode = selectedCudaRenderMode();
+    if (request.hostCudaEnabled) {
+        if (request.hostCudaStream != nullptr) {
+            reason = "The host enabled OFX CUDA render and supplied a CUDA stream, so IBKeyer must stay on the host-CUDA memory path.";
+            return BackendKind::HostCUDA;
+        }
+        reason = "The host enabled OFX CUDA render but did not supply a CUDA stream. That leaves no safe CPU-readable fallback for the CUDA images.";
+        return BackendKind::HostCUDA;
+    }
+    if (cudaMode == CudaRenderMode::HostPreferred &&
         request.hostCudaStream != nullptr) {
-        reason = "The host supplied CUDA device images and a CUDA stream, so Windows/Linux prefer the zero-copy host-CUDA path.";
+        reason = "Host CUDA is the selected policy and the host supplied CUDA device images plus a CUDA stream, so the zero-copy path is preferred.";
         return BackendKind::HostCUDA;
     }
     if (envFlagEnabled("IBKEYER_DISABLE_CUDA")) {
         reason = "IBKEYER_DISABLE_CUDA disabled the internal CUDA path.";
         return BackendKind::CPU;
     }
-    reason = "Host CUDA was unavailable or disabled, so Windows/Linux fall back to the internal staged CUDA path.";
+    if (cudaMode == CudaRenderMode::InternalOnly) {
+        reason = "IBKEYER_CUDA_RENDER_MODE=INTERNAL (or a legacy override) forced the staged internal CUDA path.";
+    } else {
+        reason = "The host did not enable OFX host-CUDA rendering for this frame, so the staged internal CUDA path is the fallback.";
+    }
     return BackendKind::InternalCUDA;
 #else
     (void)request;
@@ -679,11 +785,27 @@ const char* backendName(BackendKind backend)
     return "Unknown";
 }
 
+CudaRenderMode selectedCudaRenderMode()
+{
+    return selectedCudaRenderModeImpl();
+}
+
 // Moved from: the old "just call the processor" flow.
 //
 // This is now the one routing point that every render goes through. 
 BackendResult render(const RenderRequest& request)
 {
+    // once the host has switched fetchImage() over to CUDA device memory, any "fallback"
+    // that tries to read those pointers on the CPU is no longer a real fallback. 
+    // it needs to be failing fast instead of falling through
+    if (request.hostCudaEnabled && request.hostCudaStream == nullptr) {
+        return {
+            false,
+            BackendKind::HostCUDA,
+            "The host enabled CUDA render but did not provide a CUDA stream, so IBKeyer cannot safely read or stage those images."
+        };
+    }
+
     std::string selectionReason;
     const BackendKind preferredBackend = chooseBackend(request, selectionReason);
     logMessage(false, formatString("IBKeyer: preferred backend %s. %s",
@@ -705,6 +827,11 @@ BackendResult render(const RenderRequest& request)
         result = renderHostCuda(request);
         if (result.success) {
             logMessage(false, formatString("IBKeyer: rendered with %s.", backendName(result.backend)));
+            return result;
+        }
+        if (request.hostCudaEnabled) {
+            logMessage(true, formatString("IBKeyer: Host CUDA path failed while the host was supplying CUDA images. Refusing CPU staging fallback. %s",
+                                          result.detail.c_str()));
             return result;
         }
         logMessage(true, formatString("IBKeyer: Host CUDA path declined, falling back to staged CUDA. %s",

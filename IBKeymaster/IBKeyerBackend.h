@@ -9,6 +9,12 @@
 
 namespace IBKeyerCore {
 
+enum class CudaRenderMode
+{
+    HostPreferred,
+    InternalOnly
+};
+
 enum class BackendKind
 {
     CPU,
@@ -63,5 +69,6 @@ struct BackendResult
 
 BackendResult render(const RenderRequest& request);
 const char* backendName(BackendKind backend);
+CudaRenderMode selectedCudaRenderMode();
 
 } // namespace IBKeyerCore
