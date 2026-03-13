@@ -34,7 +34,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/macos-clang",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64"
       }
     }
   ],

@@ -562,6 +562,14 @@ BackendResult renderHostMetal(const RenderRequest& request)
                 "Host Metal requires the Screen clip to match the Source bounds; mismatched host buffers fall back to CPU to keep the port deterministic."
             };
         }
+
+        if (request.screenImage->getPixelComponents() != OFX::ePixelComponentRGBA) {
+            return {
+                false,
+                BackendKind::HostMetal,
+                "Host Metal currently assumes the Screen clip arrives as RGBA device memory; RGB Screen clips fall back to CPU so we do not misread host Metal buffers."
+            };
+        }
     }
 
     // The shared Metal kernel still expects host-provided MTLBuffer handles. We keep that

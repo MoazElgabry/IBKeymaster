@@ -6,6 +6,13 @@ set(PLUGIN_BASENAME "IBKeyer")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(APPLE AND NOT DEFINED CMAKE_OSX_ARCHITECTURES)
+  # The old Makefile built a universal macOS binary for both Intel and Apple Silicon.
+  # Keeping that default here avoids an easy regression where the new CMake path silently
+  # produces a host-architecture-only plugin depending on which Mac happened to build it.
+  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "macOS architectures to build")
+endif()
+
 set(OFX_SUPPORT_SOURCES
   Support/Library/ofxsCore.cpp
   Support/Library/ofxsImageEffect.cpp

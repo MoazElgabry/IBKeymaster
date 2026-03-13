@@ -473,7 +473,11 @@ void IBKeyerFactory::describeInContext(ImageEffectDescriptor& p_Desc, ContextEnu
     guidedGroup->setLabels("Guided Filter", "Guided Filter", "Guided Filter");
 
     BooleanParamDescriptor* guidedEnabled = p_Desc.defineBooleanParam("guidedFilterEnabled");
-    guidedEnabled->setDefault(true);
+    // The original Gaffer IBKeyer stops at the raw IBK-style result plus optional premultiply.
+    // Guided filtering is useful, but it is an extension we added in the OFX port, not part of
+    // the source graph itself. Defaulting it off keeps "fresh instance" behaviour closer to the
+    // original tool and makes backend parity checks less confusing.
+    guidedEnabled->setDefault(false);
     guidedEnabled->setHint("Enable guided filter matte refinement.");
     guidedEnabled->setLabels("Enable", "Enable", "Enable");
     guidedEnabled->setParent(*guidedGroup);
