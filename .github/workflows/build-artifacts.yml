@@ -109,14 +109,17 @@ jobs:
         shell: bash
         run: |
           rm -rf artifacts/linux-x86_64
-          mkdir -p artifacts/linux-x86_64/IBKeyer.ofx.bundle/Contents/Linux-x86-64
+          # OFX hosts expect the bundle directory itself to be copied into /usr/OFX/Plugins
+          # (or another OFX_PLUGIN_PATH entry), so we stage a small portable parent folder that
+          # preserves IBKeyer.ofx.bundle/Contents/Linux-x86-64/IBKeyer.ofx exactly as installed.
+          mkdir -p artifacts/linux-x86_64/IBKeyer-linux-x86_64-portable/IBKeyer.ofx.bundle/Contents/Linux-x86-64
           cp IBKeymaster/IBKeyer.ofx.bundle/Contents/Linux-x86-64/IBKeyer.ofx \
-             artifacts/linux-x86_64/IBKeyer.ofx.bundle/Contents/Linux-x86-64/
+             artifacts/linux-x86_64/IBKeyer-linux-x86_64-portable/IBKeyer.ofx.bundle/Contents/Linux-x86-64/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: IBKeyer-linux-x86_64
-          path: artifacts/linux-x86_64/IBKeyer.ofx.bundle
+          path: artifacts/linux-x86_64/IBKeyer-linux-x86_64-portable
           if-no-files-found: error
           retention-days: 14
