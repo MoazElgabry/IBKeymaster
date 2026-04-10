@@ -42,7 +42,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.24
+        # v0.2.24 only knows about CUDA 12.9.0. Updating the action keeps our requested
+        # toolkit line at 12.9.1 instead of silently downgrading it just to satisfy the installer.
+        uses: Jimver/cuda-toolkit@v0.2.29
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: network
