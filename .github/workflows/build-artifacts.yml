@@ -31,6 +31,7 @@ permissions:
 env:
   CUDA_VERSION: "12.9.1"
   CUDA_ARCHS: "60;61;75;86;89"
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   build-windows:
@@ -39,7 +40,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install CUDA Toolkit
         # v0.2.24 only knows about CUDA 12.9.0. Updating the action keeps our requested
@@ -85,7 +86,7 @@ jobs:
           Copy-Item -Recurse "IBKeymaster/IBKeyer.ofx.bundle" "artifacts/windows-win64/IBKeyer-Win64-portable/"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: IBKeyer-Win64
           path: artifacts/windows-win64/IBKeyer-Win64-portable
@@ -98,7 +99,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Configure
         shell: bash
@@ -127,7 +128,7 @@ jobs:
              artifacts/macos-universal/IBKeyer-macos-universal-portable/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: IBKeyer-macos-universal
           path: artifacts/macos-universal/IBKeyer-macos-universal-portable
@@ -144,7 +145,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build dependencies
         shell: bash
@@ -182,7 +183,7 @@ jobs:
              artifacts/linux-x86_64/IBKeyer-linux-x86_64-portable/IBKeyer.ofx.bundle/Contents/Linux-x86-64/
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: IBKeyer-linux-x86_64
           path: artifacts/linux-x86_64/IBKeyer-linux-x86_64-portable
